@@ -28,6 +28,7 @@ import logging
 import itertools
 import re
 import math
+import sexpdata
 
 parent_module = sys.modules['.'.join(__name__.split('.')[:-1]) or '__main__']
 if __name__ == '__main__' or parent_module.__name__ == '__main__':
@@ -42,8 +43,7 @@ else:
 def get_path(module):
     path = module.GetPath()
     if hasattr(path, 'AsString'):
-        path_raw = path.AsString()
-        path = "/".join(map(lambda x: x[-8:].upper(), path_raw.split('/')))
+        path = path.AsString()
     return path
 
 
@@ -114,61 +114,15 @@ def get_module_text_items(module):
 class Replicator():
     @staticmethod
     def extract_subsheets(filename):
-        with open(filename, 'rb') as f:
-            file_folder = os.path.dirname(os.path.abspath(filename))
-            file_lines = f.read().decode('utf-8')
-        # alternative solution
-        # extract all sheet references
-        sheet_indices = [m.start() for m in re.finditer('\$Sheet', file_lines)]
-        endsheet_indices = [m.start() for m in re.finditer('\$EndSheet', file_lines)]
+        fd = open(filename, 'r')
+        sheet = sexpdata.load(fd)
+        subsheets = [ x for x in sheet if (isinstance(x, sexpdata.Symbol) == False) and (x[0].value() == 'sheet')]
+        for subsheet in subsheets:
+            file_path = [x[2] for x in subsheet if (isinstance(x, sexpdata.Symbol) == False) and (x[0].value() == 'property') and (x[1] == 'Sheet file') ]
+            subsheet_id = [x[1].value() for x in subsheet if (isinstance(x, sexpdata.Symbol) == False) and (x[0].value() == 'uuid') ]
+            subsheet_name = [x[2] for x in subsheet if (isinstance(x, sexpdata.Symbol) == False) and (x[0].value() == 'property') and (x[1] == 'Sheet name') ]
+            yield file_path[0], subsheet_id[0], subsheet_name[0]
 
-        if len(sheet_indices) != len(endsheet_indices):
-            raise LookupError("Schematic page contains errors")
-
-        sheet_locations = zip(sheet_indices, endsheet_indices)
-        for sheet_location in sheet_locations:
-            sheet_reference = file_lines[sheet_location[0]:sheet_location[1]].split('\n')
-            # parse the sheed description
-            for line in sheet_reference:
-                # found sheet ID
-                if line.startswith('U '):
-                    subsheet_id = line.split()[1]
-                # found sheet name
-                if line.startswith('F0 '):
-                    # remove the first field ("F0 ")
-                    partial_line = line.lstrip("F0 ")
-                    partial_line = " ".join(partial_line.split()[:-1])
-                    # remove the last field (text size)
-                    subsheet_name = partial_line.rstrip("\"").lstrip("\"")
-                # found sheet filename
-                if line.startswith('F1 '):
-                    subsheet_path = re.findall("\s\"(.*.sch)\"\s", line)[0]
-                    subsheet_line = file_lines.split("\n").index(line)
-                    if not os.path.isabs(subsheet_path):
-                        # check if path is encoded with variables
-                        if "${" in subsheet_path:
-                            start_index = subsheet_path.find("${") + 2
-                            end_index = subsheet_path.find("}")
-                            env_var = subsheet_path[start_index:end_index]
-                            path = os.getenv(env_var)
-                            # if variable is not defined rasie an exception
-                            if path is None:
-                                raise LookupError("Can not find subsheet: " + subsheet_path)
-                            # replace variable with full path
-                            subsheet_path = subsheet_path.replace("${", "") \
-                                .replace("}", "") \
-                                .replace("env_var", path)
-
-                    # if path is still not absolute, then it is relative to project
-                    if not os.path.isabs(subsheet_path):
-                        subsheet_path = os.path.join(file_folder, subsheet_path)
-
-                    subsheet_path = os.path.normpath(subsheet_path)
-                    # found subsheet reference go for the next one, no need to parse further
-                    break
-
-            file_path = os.path.abspath(subsheet_path)
-            yield file_path, subsheet_id, subsheet_name
 
     def find_all_sch_files(self, filename, dict_of_sheets):
         for file_path, subsheet_id, subsheet_name in self.extract_subsheets(filename):
@@ -204,7 +158,7 @@ class Replicator():
         self.update_progress = None
 
         self.pcb_filename = os.path.abspath(board.GetFileName())
-        self.sch_filename = self.pcb_filename.replace(".kicad_pcb", ".sch")
+        self.sch_filename = self.pcb_filename.replace(".kicad_pcb", ".kicad_sch")
         self.project_folder = os.path.dirname(self.pcb_filename)
 
         # test if sch file exist
@@ -695,7 +649,7 @@ class Replicator():
                     # set orientation
                     dst_mod_text_items[index].SetTextAngle(src_text.GetTextAngle())
                     # thickness
-                    dst_mod_text_items[index].SetThickness(src_text.GetThickness())
+                    dst_mod_text_items[index].SetTextThickness(src_text.GetTextThickness())
                     # width
                     dst_mod_text_items[index].SetTextWidth(src_text.GetTextWidth())
                     # height
